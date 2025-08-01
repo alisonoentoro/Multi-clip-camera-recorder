@@ -166,12 +166,15 @@
         function startClipRecording() {
             if (!stream || !stream.active) return showMessage("Camera is not ready.", true);
             recordedChunks = [];
-            const options = { mimeType: 'video/webm; codecs=vp9' };
+            const options = { 
+                mimeType: 'video/webm; codecs=vp9',
+                videoBitsPerSecond: 2500000 // Higher bitrate for better quality
+            };
             try {
                 mediaRecorder = new MediaRecorder(stream, options);
                 mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
                 mediaRecorder.onstop = handleClipStop;
-                mediaRecorder.start();
+                mediaRecorder.start(100); // Request data every 100ms for smoother recording
                 updateRecordButtonUI('recording');
                 showMessage("Clip recording started!");
             } catch (e) { showMessage('Failed to start recording.', true); }
@@ -200,17 +203,233 @@
             mediaRecorder = null;
         }
 
-        function finalizeSession() {
+        async function finalizeSession() {
             if (currentSessionClips.length === 0) {
                 showMessage("No clips to save.", true);
                 return resetSession();
             }
-            const finalBlob = new Blob(currentSessionClips.map(c => c.blob), { type: 'video/webm' });
-            const url = URL.createObjectURL(finalBlob);
-            savedVideos.push({ url, name: `Session-${new Date().toISOString().replace(/:/g, '-')}.webm` });
-            updateVideosList();
-            showMessage("Video session saved!");
+            
+            showMessage("Processing video session...");
+            
+            try {
+                // Create a proper concatenated video using MediaRecorder
+                const concatenatedBlob = await concatenateVideoClips(currentSessionClips);
+                const url = URL.createObjectURL(concatenatedBlob);
+                // Create formatted date and time for filename
+                const now = new Date();
+                const day = String(now.getDate()).padStart(2, '0');
+                const month = String(now.getMonth() + 1).padStart(2, '0');
+                const year = String(now.getFullYear()).slice(-2);
+                const hours = String(now.getHours()).padStart(2, '0');
+                const minutes = String(now.getMinutes()).padStart(2, '0');
+                const seconds = String(now.getSeconds()).padStart(2, '0');
+                const filename = `${day}-${month}-${year}_${hours}:${minutes}:${seconds}.webm`;
+                
+                savedVideos.push({ url, name: filename });
+                updateVideosList();
+                showMessage("Video session saved!");
+            } catch (error) {
+                console.error('Error concatenating clips:', error);
+                // Fallback to simple blob concatenation
+                const finalBlob = new Blob(currentSessionClips.map(c => c.blob), { type: 'video/webm' });
+                const url = URL.createObjectURL(finalBlob);
+                savedVideos.push({ url, name: `Session-${new Date().toISOString().replace(/:/g, '-')}.webm` });
+                updateVideosList();
+                showMessage("Video session saved (basic merge)!");
+            }
+            
             resetSession();
+        }
+
+        async function concatenateVideoClips(clips) {
+            if (clips.length === 1) {
+                // Single clip, return as-is to preserve original timing and audio
+                return clips[0].blob;
+            }
+            
+            return new Promise(async (resolve, reject) => {
+                try {
+                    showMessage("Combining clips with audio... Please wait.");
+                    
+                    // For better performance and no lag, use a simpler approach
+                    // that maintains timing accuracy
+                    
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Load all clips
+                    const videoData = await Promise.all(clips.map((clip, index) => {
+                        return new Promise((resolveClip) => {
+                            const video = document.createElement('video');
+                            video.src = URL.createObjectURL(clip.blob);
+                            video.preload = 'metadata';
+                            
+                            video.onloadedmetadata = () => {
+                                resolveClip({
+                                    video: video,
+                                    duration: video.duration,
+                                    width: video.videoWidth,
+                                    height: video.videoHeight,
+                                    blob: clip.blob
+                                });
+                            };
+                            
+                            video.onerror = () => resolveClip(null);
+                        });
+                    }));
+                    
+                    const validClips = videoData.filter(clip => clip !== null);
+                    if (validClips.length === 0) {
+                        throw new Error('No valid clips to process');
+                    }
+                    
+                    // Set canvas dimensions from first clip
+                    const { width, height } = validClips[0];
+                    canvas.width = width;
+                    canvas.height = height;
+                    
+                    // Create audio context with high performance settings
+                    const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 48000, // High sample rate for better quality
+                        latencyHint: 'playback' // Optimize for playback performance
+                    });
+                    const destination = audioContext.createMediaStreamDestination();
+                    
+                    // Create high-performance canvas stream
+                    const canvasStream = canvas.captureStream(60); // Higher FPS for smoother video
+                    
+                    // Combine streams
+                    const finalStream = new MediaStream();
+                    finalStream.addTrack(canvasStream.getVideoTracks()[0]);
+                    finalStream.addTrack(destination.stream.getAudioTracks()[0]);
+                    
+                    // Use high quality recording settings
+                    const mediaRecorder = new MediaRecorder(finalStream, {
+                        mimeType: 'video/webm; codecs=vp9,opus',
+                        videoBitsPerSecond: 4000000, // Higher bitrate for smoother video
+                        audioBitsPerSecond: 192000   // Higher audio bitrate
+                    });
+                    
+                    const recordedChunks = [];
+                    mediaRecorder.ondataavailable = (e) => {
+                        if (e.data.size > 0) recordedChunks.push(e.data);
+                    };
+                    
+                    mediaRecorder.onstop = () => {
+                        validClips.forEach(clipData => {
+                            URL.revokeObjectURL(clipData.video.src);
+                        });
+                        audioContext.close();
+                        
+                        const finalBlob = new Blob(recordedChunks, { type: 'video/webm' });
+                        resolve(finalBlob);
+                    };
+                    
+                    // Start recording
+                    mediaRecorder.start(100); // Frequent data collection for smoother recording
+                    
+                    let currentClipIndex = 0;
+                    let currentAudioSource = null;
+                    let animationId = null;
+                    
+                    async function playNextClip() {
+                        if (currentClipIndex >= validClips.length) {
+                            // Stop animation loop
+                            if (animationId) {
+                                cancelAnimationFrame(animationId);
+                            }
+                            
+                            setTimeout(() => {
+                                if (currentAudioSource) {
+                                    currentAudioSource.disconnect();
+                                }
+                                mediaRecorder.stop();
+                            }, 100); // Minimal delay
+                            return;
+                        }
+                        
+                        const clipData = validClips[currentClipIndex];
+                        const video = clipData.video;
+                        
+                        showMessage(`Processing clip ${currentClipIndex + 1}/${validClips.length}`);
+                        
+                        // Create dedicated audio element
+                        const audioVideo = document.createElement('video');
+                        audioVideo.src = URL.createObjectURL(clipData.blob);
+                        
+                        await new Promise(resolve => {
+                            audioVideo.onloadedmetadata = resolve;
+                        });
+                        
+                        // Setup audio source
+                        if (currentAudioSource) {
+                            currentAudioSource.disconnect();
+                        }
+                        currentAudioSource = audioContext.createMediaElementSource(audioVideo);
+                        currentAudioSource.connect(destination);
+                        
+                        // Reset to beginning
+                        video.currentTime = 0;
+                        audioVideo.currentTime = 0;
+                        video.muted = true;
+                        audioVideo.volume = 1.0;
+                        
+                        // High-performance rendering function
+                        function renderFrame() {
+                            if (video.ended || video.paused) {
+                                return;
+                            }
+                            
+                            // Use efficient canvas operations
+                            ctx.drawImage(video, 0, 0, width, height);
+                            animationId = requestAnimationFrame(renderFrame);
+                        }
+                        
+                        video.onplay = () => {
+                            renderFrame();
+                        };
+                        
+                        video.onended = () => {
+                            if (animationId) {
+                                cancelAnimationFrame(animationId);
+                                animationId = null;
+                            }
+                            
+                            audioVideo.pause();
+                            audioVideo.currentTime = 0;
+                            URL.revokeObjectURL(audioVideo.src);
+                            
+                            currentClipIndex++;
+                            // Minimal delay for seamless transition
+                            setTimeout(playNextClip, 50);
+                        };
+                        
+                        // Start synchronized playback
+                        const playPromises = [
+                            video.play().catch(e => console.warn('Video play failed:', e)),
+                            audioVideo.play().catch(e => console.warn('Audio play failed:', e))
+                        ];
+                        
+                        try {
+                            await Promise.allSettled(playPromises);
+                        } catch (error) {
+                            console.error('Playback error:', error);
+                            currentClipIndex++;
+                            playNextClip();
+                        }
+                    }
+                    
+                    playNextClip();
+                    
+                } catch (error) {
+                    console.error('Advanced concatenation failed:', error);
+                    
+                    // Fast fallback - simple blob concatenation
+                    showMessage("Using fast merge method...");
+                    const simpleBlob = new Blob(clips.map(c => c.blob), { type: 'video/webm' });
+                    resolve(simpleBlob);
+                }
+            });
         }
 
         function resetSession() {
@@ -274,17 +493,38 @@
                     videoNameSpan.textContent = video.name;
                     videoNameSpan.className = 'text-blue-400 flex-grow mr-4 truncate';
 
+                    const buttonsContainer = document.createElement('div');
+                    buttonsContainer.className = 'flex items-center space-x-2 ml-4 flex-shrink-0';
+
+                    const downloadButton = document.createElement('button');
+                    downloadButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-500 hover:text-green-500" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>`;
+                    downloadButton.className = 'focus:outline-none';
+                    downloadButton.title = 'Download video';
+                    downloadButton.onclick = (e) => {
+                        e.stopPropagation();
+                        const link = document.createElement('a');
+                        link.href = video.url;
+                        link.download = video.name;
+                        document.body.appendChild(link);
+                        link.click();
+                        document.body.removeChild(link);
+                    };
+
                     const deleteButton = document.createElement('button');
                     deleteButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-500 hover:text-red-500" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>`;
-                    deleteButton.className = 'ml-4 focus:outline-none flex-shrink-0';
+                    deleteButton.className = 'focus:outline-none';
+                    deleteButton.title = 'Delete video';
                     deleteButton.onclick = (e) => {
                         e.stopPropagation();
                         URL.revokeObjectURL(savedVideos[index].url);
                         savedVideos.splice(index, 1);
                         updateVideosList();
                     };
+
+                    buttonsContainer.appendChild(downloadButton);
+                    buttonsContainer.appendChild(deleteButton);
                     videoItem.appendChild(videoNameSpan);
-                    videoItem.appendChild(deleteButton);
+                    videoItem.appendChild(buttonsContainer);
                     videosList.appendChild(videoItem);
                 });
             }
