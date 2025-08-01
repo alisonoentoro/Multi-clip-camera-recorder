@@ -1,5 +1,3 @@
-<!-- MPEG4 and Countdown code-->
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -133,15 +131,50 @@
     
     <!-- Clips Manager Modal -->
     <div id="clipsManagerModal" class="modal fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-30 hidden opacity-0">
-        <div class="bg-gray-800 rounded-lg shadow-xl w-full max-w-md m-4">
+        <div class="bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl m-4">
             <div class="p-4 border-b border-gray-700 flex justify-between items-center">
                 <h2 class="text-xl font-bold">Manage & Reorder Clips</h2>
                 <button id="closeClipsManagerModalButton" class="text-gray-400 hover:text-white focus:outline-none"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
             </div>
-            <div id="clipsListContainer" class="p-4 max-h-96 overflow-y-auto">
-                <p class="text-gray-400 text-sm mb-2">Drag and drop to reorder clips.</p>
-                <div id="clipsList" class="grid grid-cols-3 gap-2">
-                    <!-- Draggable clip items will be injected here -->
+            <div id="clipsListContainer" class="p-4 h-100 flex flex-col">
+                <div class="flex justify-between items-center mb-2">
+                    <p class="text-gray-400 text-sm">Drag and drop to reorder clips. Click × to delete. Tap clip to preview.</p>
+                    <div id="clipsPagination" class="hidden flex items-center space-x-2 text-sm">
+                        <button id="prevPageButton" class="px-2 py-1 bg-gray-600 hover:bg-gray-500 rounded text-white disabled:opacity-50 disabled:cursor-not-allowed">
+                            ←
+                        </button>
+                        <span id="pageInfo" class="text-gray-300">Page 1 of 1</span>
+                        <button id="nextPageButton" class="px-2 py-1 bg-gray-600 hover:bg-gray-500 rounded text-white disabled:opacity-50 disabled:cursor-not-allowed">
+                            →
+                        </button>
+                    </div>
+                </div>
+                
+                <div class="flex-1 overflow-hidden">
+                    <div id="clipsList" class="grid grid-cols-4 gap-3 h-full">
+                        <!-- Draggable clip items will be injected here -->
+                    </div>
+                </div>
+                
+                <!-- Clip Preview Container -->
+                <div id="clipPreviewContainer" class="hidden mt-4 border-t border-gray-600 pt-4">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 id="clipPreviewTitle" class="text-lg font-medium text-white">Clip Preview</h3>
+                        <button id="closeClipPreviewButton" class="text-gray-400 hover:text-white focus:outline-none">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                    <video id="clipPreviewPlayer" controls class="w-full rounded-lg bg-black max-h-60"></video>
+                    <div class="flex justify-between items-center mt-2 text-sm text-gray-400">
+                        <span id="clipPreviewInfo">Clip details will appear here</span>
+                        <div class="flex space-x-2">
+                            <button id="deleteCurrentClipButton" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm transition-colors">
+                                Delete This Clip
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -167,6 +200,11 @@
         const countdownToggle = document.getElementById('countdownToggle'), countdownToggleSlider = document.getElementById('countdownToggleSlider');
         const countdownDuration = document.getElementById('countdownDuration'), countdownDurationContainer = document.getElementById('countdownDurationContainer');
         const clipsList = document.getElementById('clipsList');
+        const clipPreviewContainer = document.getElementById('clipPreviewContainer'), clipPreviewPlayer = document.getElementById('clipPreviewPlayer');
+        const clipPreviewTitle = document.getElementById('clipPreviewTitle'), clipPreviewInfo = document.getElementById('clipPreviewInfo');
+        const closeClipPreviewButton = document.getElementById('closeClipPreviewButton'), deleteCurrentClipButton = document.getElementById('deleteCurrentClipButton');
+        const clipsPagination = document.getElementById('clipsPagination'), prevPageButton = document.getElementById('prevPageButton');
+        const nextPageButton = document.getElementById('nextPageButton'), pageInfo = document.getElementById('pageInfo');
         const messageBox = document.getElementById('messageBox');
 
         // State variables
@@ -176,6 +214,9 @@
         let currentSessionClips = []; // Now stores { blob, thumbnailUrl, mimeType, fileExtension }
         let draggedItemIndex = null;
         let isCountdownActive = false;
+        let currentPreviewClipIndex = -1;
+        let currentClipsPage = 1;
+        const clipsPerPage = 8; // 2 rows × 4 clips
         
         // Settings
         let countdownEnabled = false;
@@ -192,15 +233,65 @@
 
         async function setupCamera() {
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: true });
+                // Request high quality video with aspect ratio similar to the reference image
+                const constraints = {
+                    video: { 
+                        facingMode: 'environment',
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                        aspectRatio: { ideal: 16/9 }, // Match standard camera aspect ratio
+                        frameRate: { ideal: 30, min: 24 }
+                    },
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        sampleRate: { ideal: 48000 }
+                    }
+                };
+                
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
                 videoElement.srcObject = stream;
+                
+                // Camera is ready - no message shown
             } catch (err) {
                 showMessage("Could not access rear camera. Trying front camera.", true);
                 try {
-                    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    // Fallback to front camera with high quality
+                    const fallbackConstraints = {
+                        video: { 
+                            width: { ideal: 1920 },
+                            height: { ideal: 1080 },
+                            aspectRatio: { ideal: 16/9 },
+                            frameRate: { ideal: 30, min: 24 }
+                        },
+                        audio: {
+                            echoCancellation: true,
+                            noiseSuppression: true,
+                            sampleRate: { ideal: 48000 }
+                        }
+                    };
+                    
+                    stream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
                     videoElement.srcObject = stream;
+                    
+                    // Front camera ready - no message shown
                 } catch (fallbackErr) {
-                     showMessage("Could not access any camera. Please check permissions.", true);
+                    // Final fallback - any available camera
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia({ 
+                            video: { 
+                                width: { ideal: 1280 },
+                                height: { ideal: 720 },
+                                frameRate: { ideal: 30 }
+                            }, 
+                            audio: true 
+                        });
+                        videoElement.srcObject = stream;
+                        
+                        // Basic camera ready - no message shown
+                    } catch (finalErr) {
+                        showMessage("Could not access any camera. Please check permissions.", true);
+                    }
                 }
             }
         }
@@ -238,20 +329,42 @@
         function beginActualRecording() {
             recordedChunks = [];
             
-            // Try MP4 first, fallback to WebM if not supported
+            // High quality recording options for MPEG-4/QuickTime compatibility
             let options;
             if (MediaRecorder.isTypeSupported('video/mp4; codecs="avc1.42E01E, mp4a.40.2"')) {
+                // H.264 + AAC in MP4 container (best QuickTime compatibility)
                 options = { 
                     mimeType: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
-                    videoBitsPerSecond: 2500000 // Higher bitrate for better quality
+                    videoBitsPerSecond: 8000000, // 8 Mbps for high quality 1080p
+                    audioBitsPerSecond: 320000   // High quality AAC audio
+                };
+            } else if (MediaRecorder.isTypeSupported('video/mp4; codecs="avc1.4d0020, mp4a.40.2"')) {
+                // Alternative H.264 profile
+                options = { 
+                    mimeType: 'video/mp4; codecs="avc1.4d0020, mp4a.40.2"',
+                    videoBitsPerSecond: 8000000,
+                    audioBitsPerSecond: 320000
+                };
+            } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+                // Standard MP4 (should work with QuickTime)
+                options = { 
+                    mimeType: 'video/mp4',
+                    videoBitsPerSecond: 8000000,
+                    audioBitsPerSecond: 320000
                 };
             } else if (MediaRecorder.isTypeSupported('video/webm; codecs=vp9')) {
+                // WebM fallback (won't work in QuickTime but still records)
                 options = { 
                     mimeType: 'video/webm; codecs=vp9',
-                    videoBitsPerSecond: 2500000
+                    videoBitsPerSecond: 8000000,
+                    audioBitsPerSecond: 320000
                 };
             } else {
-                options = { videoBitsPerSecond: 2500000 };
+                // Basic fallback
+                options = { 
+                    videoBitsPerSecond: 8000000,
+                    audioBitsPerSecond: 320000 
+                };
             }
             
             try {
@@ -261,10 +374,12 @@
                 mediaRecorder.start(100); // Request data every 100ms for smoother recording
                 updateRecordButtonUI('recording');
                 
-                // Show the format being used
-                const format = mediaRecorder.mimeType.includes('mp4') ? 'MP4' : 'WebM';
-                showMessage(`${format} recording started!`);
-            } catch (e) { showMessage('Failed to start recording.', true); }
+                // Show simple recording message
+                showMessage("Camera recording");
+            } catch (e) { 
+                showMessage('Failed to start recording.', true);
+                console.error('Recording error:', e);
+            }
         }
         
         function stopClipRecording() {
@@ -321,8 +436,8 @@
                 const minutes = String(now.getMinutes()).padStart(2, '0');
                 const seconds = String(now.getSeconds()).padStart(2, '0');
                 
-                // Use the file extension from the first clip, or default to mp4/webm
-                const fileExtension = 'mp4'; // force mp4 extension for QuickTime compatibility
+                // Use the file extension from the first clip, or default to mp4
+                const fileExtension = currentSessionClips[0]?.fileExtension || 'mp4';
                 const filename = `${day}-${month}-${year}_${hours}:${minutes}:${seconds}.${fileExtension}`;
                 
                 savedVideos.push({ url, name: filename });
@@ -335,7 +450,7 @@
                     type: currentSessionClips[0]?.mimeType || 'video/mp4' 
                 });
                 const url = URL.createObjectURL(finalBlob);
-                const fileExtension = 'mp4'; // force mp4 extension for QuickTime compatibility
+                const fileExtension = currentSessionClips[0]?.fileExtension || 'mp4';
                 savedVideos.push({ url, name: `Session-${new Date().toISOString().replace(/:/g, '-')}.${fileExtension}` });
                 updateVideosList();
                 showMessage("Video session saved (basic merge)!");
@@ -407,21 +522,30 @@
                     finalStream.addTrack(canvasStream.getVideoTracks()[0]);
                     finalStream.addTrack(destination.stream.getAudioTracks()[0]);
                     
-                    // Use high quality recording settings with proper MIME type
-                    const finalMimeType = validClips[0].mimeType || 'video/webm';
+                    // Use high quality recording settings with MPEG-4 compatibility
+                    const finalMimeType = validClips[0].mimeType || 'video/mp4';
                     let recorderOptions;
                     
                     if (finalMimeType.includes('mp4')) {
-                        recorderOptions = {
-                            mimeType: 'video/webm; codecs=vp9,opus', // Browser compatibility fallback
-                            videoBitsPerSecond: 4000000,
-                            audioBitsPerSecond: 192000
-                        };
+                        // Prioritize H.264 + AAC for best QuickTime compatibility
+                        if (MediaRecorder.isTypeSupported('video/mp4; codecs="avc1.42E01E, mp4a.40.2"')) {
+                            recorderOptions = {
+                                mimeType: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+                                videoBitsPerSecond: 10000000, // Higher bitrate for concatenation
+                                audioBitsPerSecond: 320000
+                            };
+                        } else {
+                            recorderOptions = {
+                                mimeType: 'video/mp4',
+                                videoBitsPerSecond: 10000000,
+                                audioBitsPerSecond: 320000
+                            };
+                        }
                     } else {
                         recorderOptions = {
                             mimeType: 'video/webm; codecs=vp9,opus',
-                            videoBitsPerSecond: 4000000,
-                            audioBitsPerSecond: 192000
+                            videoBitsPerSecond: 10000000,
+                            audioBitsPerSecond: 320000
                         };
                     }
                     
@@ -673,17 +797,29 @@
 
         // --- Clip Management & Drag-Drop ---
         async function openClipsManager() {
+            currentClipsPage = 1; // Reset to first page when opening
             renderClipsList();
             toggleModal(clipsManagerModal, true);
         }
 
         function renderClipsList() {
             clipsList.innerHTML = '';
-            currentSessionClips.forEach((clip, index) => {
+            
+            // Calculate pagination
+            const totalPages = Math.ceil(currentSessionClips.length / clipsPerPage);
+            const startIndex = (currentClipsPage - 1) * clipsPerPage;
+            const endIndex = Math.min(startIndex + clipsPerPage, currentSessionClips.length);
+            const clipsToShow = currentSessionClips.slice(startIndex, endIndex);
+            
+            // Update pagination controls
+            updatePaginationControls(totalPages);
+            
+            clipsToShow.forEach((clip, pageIndex) => {
+                const actualIndex = startIndex + pageIndex; // Real index in the full array
                 const item = document.createElement('div');
-                item.className = 'clip-item relative rounded-lg bg-gray-700 cursor-pointer';
+                item.className = 'clip-item relative rounded-lg bg-gray-700 cursor-pointer hover:bg-gray-600 transition-colors duration-200';
                 item.setAttribute('draggable', 'true');
-                item.dataset.index = index;
+                item.dataset.index = actualIndex;
 
                 const thumbnailContainer = document.createElement('div');
                 thumbnailContainer.className = 'thumbnail-container rounded-lg overflow-hidden';
@@ -702,8 +838,37 @@
 
                 const indexLabel = document.createElement('span');
                 indexLabel.className = 'absolute top-1 left-1 bg-black bg-opacity-50 text-white text-xs px-1.5 py-0.5 rounded';
-                indexLabel.textContent = index + 1;
+                indexLabel.textContent = actualIndex + 1;
                 item.appendChild(indexLabel);
+
+                // Add play icon overlay
+                const playIcon = document.createElement('div');
+                playIcon.className = 'absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity duration-200 bg-black bg-opacity-50 rounded-lg';
+                playIcon.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-white" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M8 5v14l11-7z"/>
+                    </svg>
+                `;
+                item.appendChild(playIcon);
+
+                // Add delete button (X)
+                const deleteButton = document.createElement('button');
+                deleteButton.className = 'absolute top-1 right-1 bg-red-500 hover:bg-red-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-sm font-bold transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-400 z-10';
+                deleteButton.innerHTML = '×';
+                deleteButton.title = 'Delete clip';
+                deleteButton.onclick = (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    deleteClip(actualIndex);
+                };
+                item.appendChild(deleteButton);
+
+                // Add click handler for preview (but not on delete button)
+                item.addEventListener('click', (e) => {
+                    if (!e.target.closest('button')) {
+                        previewClip(actualIndex);
+                    }
+                });
 
                 item.addEventListener('dragstart', handleDragStart);
                 item.addEventListener('dragover', handleDragOver);
@@ -712,6 +877,143 @@
 
                 clipsList.appendChild(item);
             });
+        }
+        
+        function updatePaginationControls(totalPages) {
+            if (totalPages <= 1) {
+                clipsPagination.classList.add('hidden');
+            } else {
+                clipsPagination.classList.remove('hidden');
+                pageInfo.textContent = `Page ${currentClipsPage} of ${totalPages}`;
+                
+                prevPageButton.disabled = currentClipsPage <= 1;
+                nextPageButton.disabled = currentClipsPage >= totalPages;
+            }
+        }
+        
+        function goToPage(direction) {
+            const totalPages = Math.ceil(currentSessionClips.length / clipsPerPage);
+            
+            if (direction === 'prev' && currentClipsPage > 1) {
+                currentClipsPage--;
+            } else if (direction === 'next' && currentClipsPage < totalPages) {
+                currentClipsPage++;
+            }
+            
+            // Close preview when changing pages
+            closeClipPreview();
+            renderClipsList();
+        }
+
+        function previewClip(index) {
+            if (index >= 0 && index < currentSessionClips.length) {
+                currentPreviewClipIndex = index;
+                const clip = currentSessionClips[index];
+                
+                // Show preview container
+                clipPreviewContainer.classList.remove('hidden');
+                
+                // Update title and info
+                clipPreviewTitle.textContent = `Clip ${index + 1} Preview`;
+                const fileSizeKB = Math.round(clip.blob.size / 1024);
+                const mimeType = clip.mimeType || 'video/mp4';
+                clipPreviewInfo.textContent = `Size: ${fileSizeKB}KB | Format: ${mimeType}`;
+                
+                // Reset video element and load new clip
+                clipPreviewPlayer.pause();
+                clipPreviewPlayer.currentTime = 0;
+                
+                // Create new blob URL for this clip
+                const clipUrl = URL.createObjectURL(clip.blob);
+                
+                // Set up video element properly
+                clipPreviewPlayer.src = clipUrl;
+                clipPreviewPlayer.load(); // Force reload
+                
+                // Handle successful load
+                clipPreviewPlayer.onloadedmetadata = () => {
+                    console.log('Video metadata loaded successfully');
+                };
+                
+                clipPreviewPlayer.oncanplay = () => {
+                    console.log('Video can start playing');
+                    // Auto-play the preview
+                    clipPreviewPlayer.play().catch(e => {
+                        console.warn('Auto-play blocked, user interaction required:', e);
+                    });
+                };
+                
+                // Handle errors
+                clipPreviewPlayer.onerror = (e) => {
+                    console.error('Video playback error:', e);
+                    showMessage('Error playing video clip', true);
+                };
+                
+                // Clean up URL when video ends or errors
+                clipPreviewPlayer.onended = () => {
+                    URL.revokeObjectURL(clipUrl);
+                };
+                
+                showMessage(`Previewing clip ${index + 1}`);
+            }
+        }
+        
+        function closeClipPreview() {
+            clipPreviewContainer.classList.add('hidden');
+            clipPreviewPlayer.pause();
+            
+            // Clean up current video source
+            if (clipPreviewPlayer.src) {
+                URL.revokeObjectURL(clipPreviewPlayer.src);
+            }
+            
+            clipPreviewPlayer.src = '';
+            clipPreviewPlayer.load(); // Reset video element
+            currentPreviewClipIndex = -1;
+        }
+        
+        function deleteCurrentPreviewClip() {
+            if (currentPreviewClipIndex >= 0) {
+                deleteClip(currentPreviewClipIndex);
+                closeClipPreview();
+            }
+        }
+
+        function deleteClip(index) {
+            if (index >= 0 && index < currentSessionClips.length) {
+                const removedClip = currentSessionClips[index];
+                
+                // Clean up blob URL for the removed clip's thumbnail
+                if (removedClip.thumbnailUrl) {
+                    URL.revokeObjectURL(removedClip.thumbnailUrl);
+                }
+                
+                // Close preview if we're deleting the currently previewed clip
+                if (currentPreviewClipIndex === index) {
+                    closeClipPreview();
+                } else if (currentPreviewClipIndex > index) {
+                    // Adjust preview index if we deleted a clip before it
+                    currentPreviewClipIndex--;
+                }
+                
+                // Remove clip from array
+                currentSessionClips.splice(index, 1);
+                
+                // Adjust current page if necessary
+                const totalPages = Math.ceil(currentSessionClips.length / clipsPerPage);
+                if (currentClipsPage > totalPages && totalPages > 0) {
+                    currentClipsPage = totalPages;
+                } else if (currentSessionClips.length === 0) {
+                    currentClipsPage = 1;
+                }
+                
+                // Update UI
+                renderClipsList();
+                updateSessionButtons();
+                
+                // Show confirmation message
+                showMessage(`Clip ${index + 1} deleted. ${currentSessionClips.length} clips remaining.`);
+            }
         }
 
         function generateThumbnail(clip, imgElement) {
@@ -809,6 +1111,12 @@
         closeClipsManagerModalButton.addEventListener('click', () => toggleModal(clipsManagerModal, false));
         closeSettingsModalButton.addEventListener('click', () => toggleModal(settingsModal, false));
         backToListButton.addEventListener('click', showVideoList);
+        
+        // Clip management event listeners
+        closeClipPreviewButton.addEventListener('click', closeClipPreview);
+        deleteCurrentClipButton.addEventListener('click', deleteCurrentPreviewClip);
+        prevPageButton.addEventListener('click', () => goToPage('prev'));
+        nextPageButton.addEventListener('click', () => goToPage('next'));
         
         // Settings event listeners
         countdownToggle.addEventListener('click', toggleCountdown);
