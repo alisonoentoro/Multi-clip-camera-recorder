@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Recorder</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overscroll-behavior: none;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 0.7; }
+            50% { transform: scale(1.05); opacity: 1; }
+        }
+        #recordButton.recording .outer-ring {
+            animation: pulse 1.5s infinite;
+        }
+        #recordIcon {
+            transition: all 0.2s ease-in-out;
+        }
+        #recordButton.recording #recordIcon {
+            border-radius: 0.25rem;
+            transform: scale(0.6);
+        }
+        .modal {
+            transition: opacity 0.3s ease-in-out;
+        }
+        .control-button {
+            opacity: 0;
+            transform: translateY(10px);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+        .control-button.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        /* Styles for drag-and-drop */
+        .clip-item.dragging {
+            opacity: 0.5;
+            border: 2px dashed #fff;
+        }
+        .clip-item .thumbnail-container {
+            position: relative;
+            padding-top: 56.25%; /* 16:9 Aspect Ratio */
+        }
+        .clip-item .thumbnail {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+    </style>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap">
+</head>
+<body class="bg-black text-white overflow-hidden">
+
+    <!-- Camera Feed -->
+    <video id="cameraFeed" class="absolute top-0 left-0 w-full h-full object-cover" autoplay playsinline muted></video>
+
+    <!-- Controls -->
+    <div class="absolute bottom-0 left-0 w-full p-4 flex justify-center items-center space-x-2 sm:space-x-4 z-10">
+        <button id="videosButton" class="w-12 h-12 sm:w-14 sm:h-14 bg-gray-700 rounded-full flex items-center justify-center shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-black focus:ring-blue-500">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 sm:h-7 sm:w-7" viewBox="0 0 20 20" fill="currentColor"><path d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z" /></svg>
+        </button>
+        <button id="undoButton" class="control-button w-12 h-12 sm:w-14 sm:h-14 bg-yellow-500 rounded-full flex items-center justify-center shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-black focus:ring-white">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 sm:h-7 sm:w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l4-4m-4 4l4 4"/></svg>
+        </button>
+        <button id="recordButton" class="relative w-16 h-16 sm:w-20 sm:h-20 flex items-center justify-center focus:outline-none">
+            <div class="outer-ring w-full h-full bg-white rounded-full shadow-lg"></div>
+            <div id="recordIcon" class="absolute w-14 h-14 sm:w-16 sm:h-16 bg-red-500 rounded-full"></div>
+        </button>
+        <button id="manageClipsButton" class="control-button relative w-12 h-12 sm:w-14 sm:h-14 bg-blue-500 rounded-full flex items-center justify-center shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-black focus:ring-white">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 sm:h-7 sm:w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
+            <span id="clipCounter" class="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center">0</span>
+        </button>
+        <button id="saveButton" class="control-button w-12 h-12 sm:w-14 sm:h-14 bg-green-500 rounded-full flex items-center justify-center shadow-lg focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-black focus:ring-white">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 sm:h-7 sm:w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+        </button>
+    </div>
+
+    <!-- Saved Videos Modal -->
+    <div id="videosModal" class="modal fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-20 hidden opacity-0">
+        <div class="bg-gray-800 rounded-lg shadow-xl w-full max-w-md m-4">
+            <div class="p-4 border-b border-gray-700 flex justify-between items-center">
+                <button id="backToListButton" class="text-gray-400 hover:text-white focus:outline-none hidden"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg></button>
+                <h2 id="modalTitle" class="text-xl font-bold text-center flex-grow">Saved Videos</h2>
+                <button id="closeVideosModalButton" class="text-gray-400 hover:text-white focus:outline-none"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
+            </div>
+            <div class="p-4 max-h-96 overflow-y-auto">
+                <div id="videosList"><p id="noVideosMessage" class="text-gray-400">You have no saved videos.</p></div>
+                <div id="videoPlayerContainer" class="hidden"><video id="modalVideoPlayer" controls class="w-full rounded-lg bg-black"></video></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Clips Manager Modal -->
+    <div id="clipsManagerModal" class="modal fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-30 hidden opacity-0">
+        <div class="bg-gray-800 rounded-lg shadow-xl w-full max-w-md m-4">
+            <div class="p-4 border-b border-gray-700 flex justify-between items-center">
+                <h2 class="text-xl font-bold">Manage & Reorder Clips</h2>
+                <button id="closeClipsManagerModalButton" class="text-gray-400 hover:text-white focus:outline-none"><svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
+            </div>
+            <div id="clipsListContainer" class="p-4 max-h-96 overflow-y-auto">
+                <p class="text-gray-400 text-sm mb-2">Drag and drop to reorder clips.</p>
+                <div id="clipsList" class="grid grid-cols-3 gap-2">
+                    <!-- Draggable clip items will be injected here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Message Box -->
+    <div id="messageBox" class="fixed top-5 left-1/2 -translate-x-1/2 bg-red-500 text-white px-4 py-2 rounded-md shadow-lg hidden z-40"></div>
+
+    <script>
+        // DOM Elements
+        const videoElement = document.getElementById('cameraFeed');
+        const recordButton = document.getElementById('recordButton'), recordIcon = document.getElementById('recordIcon');
+        const saveButton = document.getElementById('saveButton'), undoButton = document.getElementById('undoButton');
+        const videosButton = document.getElementById('videosButton'), manageClipsButton = document.getElementById('manageClipsButton');
+        const clipCounter = document.getElementById('clipCounter');
+        const videosModal = document.getElementById('videosModal'), closeModalButton = document.getElementById('closeVideosModalButton');
+        const videosList = document.getElementById('videosList'), noVideosMessage = document.getElementById('noVideosMessage');
+        const videoPlayerContainer = document.getElementById('videoPlayerContainer'), modalVideoPlayer = document.getElementById('modalVideoPlayer');
+        const backToListButton = document.getElementById('backToListButton'), modalTitle = document.getElementById('modalTitle');
+        const clipsManagerModal = document.getElementById('clipsManagerModal'), closeClipsManagerModalButton = document.getElementById('closeClipsManagerModalButton');
+        const clipsList = document.getElementById('clipsList');
+        const messageBox = document.getElementById('messageBox');
+
+        // State variables
+        let mediaRecorder, stream, isSavingSession = false;
+        let recordedChunks = [];
+        const savedVideos = [];
+        let currentSessionClips = []; // Now stores { blob, thumbnailUrl }
+        let draggedItemIndex = null;
+
+        // --- Utility Functions ---
+        function showMessage(message, isError = false) {
+            messageBox.textContent = message;
+            messageBox.classList.toggle('bg-red-500', isError);
+            messageBox.classList.toggle('bg-blue-500', !isError);
+            messageBox.classList.remove('hidden');
+            setTimeout(() => messageBox.classList.add('hidden'), 3000);
+        }
+
+        async function setupCamera() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: true });
+                videoElement.srcObject = stream;
+            } catch (err) {
+                showMessage("Could not access rear camera. Trying front camera.", true);
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                    videoElement.srcObject = stream;
+                } catch (fallbackErr) {
+                     showMessage("Could not access any camera. Please check permissions.", true);
+                }
+            }
+        }
+
+        // --- Core Recording Logic ---
+        function startClipRecording() {
+            if (!stream || !stream.active) return showMessage("Camera is not ready.", true);
+            recordedChunks = [];
+            const options = { mimeType: 'video/webm; codecs=vp9' };
+            try {
+                mediaRecorder = new MediaRecorder(stream, options);
+                mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+                mediaRecorder.onstop = handleClipStop;
+                mediaRecorder.start();
+                updateRecordButtonUI('recording');
+                showMessage("Clip recording started!");
+            } catch (e) { showMessage('Failed to start recording.', true); }
+        }
+        
+        function stopClipRecording() {
+            if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+        }
+
+        function handleClipStop() {
+            const clipBlob = new Blob(recordedChunks, { type: 'video/webm' });
+            recordedChunks = [];
+            
+            if (isSavingSession) {
+                if (clipBlob.size > 0) currentSessionClips.push({ blob: clipBlob, thumbnailUrl: null });
+                finalizeSession();
+            } else {
+                if (clipBlob.size > 0) {
+                    currentSessionClips.push({ blob: clipBlob, thumbnailUrl: null });
+                    showMessage(`Clip ${currentSessionClips.length} added!`);
+                }
+            }
+            
+            updateRecordButtonUI('idle');
+            updateSessionButtons();
+            mediaRecorder = null;
+        }
+
+        function finalizeSession() {
+            if (currentSessionClips.length === 0) {
+                showMessage("No clips to save.", true);
+                return resetSession();
+            }
+            const finalBlob = new Blob(currentSessionClips.map(c => c.blob), { type: 'video/webm' });
+            const url = URL.createObjectURL(finalBlob);
+            savedVideos.push({ url, name: `Session-${new Date().toISOString().replace(/:/g, '-')}.webm` });
+            updateVideosList();
+            showMessage("Video session saved!");
+            resetSession();
+        }
+
+        function resetSession() {
+            // Clean up blob URLs for thumbnails to prevent memory leaks
+            currentSessionClips.forEach(clip => {
+                if(clip.thumbnailUrl) URL.revokeObjectURL(clip.thumbnailUrl);
+            });
+            currentSessionClips = [];
+            isSavingSession = false;
+            updateSessionButtons();
+            updateRecordButtonUI('idle');
+        }
+        
+        function undoLastClip() {
+            if (currentSessionClips.length > 0) {
+                const removedClip = currentSessionClips.pop();
+                 // Clean up blob URL for the removed clip's thumbnail
+                if(removedClip.thumbnailUrl) URL.revokeObjectURL(removedClip.thumbnailUrl);
+                showMessage(`Last clip removed. ${currentSessionClips.length} clips remaining.`);
+                updateSessionButtons();
+            }
+        }
+
+        // --- UI & Modal Logic ---
+        function updateRecordButtonUI(state) {
+            recordButton.classList.toggle('recording', state === 'recording');
+        }
+
+        function updateSessionButtons() {
+            const hasClips = currentSessionClips.length > 0;
+            saveButton.classList.toggle('visible', hasClips);
+            undoButton.classList.toggle('visible', hasClips);
+            manageClipsButton.classList.toggle('visible', hasClips);
+            clipCounter.textContent = currentSessionClips.length;
+            clipCounter.classList.toggle('hidden', !hasClips);
+        }
+
+        function toggleModal(modal, visible) {
+            if (visible) {
+                modal.classList.remove('hidden');
+                setTimeout(() => modal.classList.remove('opacity-0'), 10);
+            } else {
+                modal.classList.add('opacity-0');
+                setTimeout(() => modal.classList.add('hidden'), 300);
+            }
+        }
+        
+        function updateVideosList() {
+            videosList.innerHTML = ''; 
+            if (savedVideos.length === 0) {
+                videosList.appendChild(noVideosMessage);
+                noVideosMessage.style.display = 'block';
+            } else {
+                 noVideosMessage.style.display = 'none';
+                 savedVideos.forEach((video, index) => {
+                    const videoItem = document.createElement('div');
+                    videoItem.className = 'flex items-center justify-between p-3 rounded-lg hover:bg-gray-700 transition-colors duration-200 cursor-pointer';
+                    videoItem.onclick = () => showVideoPlayer(video.url, video.name);
+
+                    const videoNameSpan = document.createElement('span');
+                    videoNameSpan.textContent = video.name;
+                    videoNameSpan.className = 'text-blue-400 flex-grow mr-4 truncate';
+
+                    const deleteButton = document.createElement('button');
+                    deleteButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-500 hover:text-red-500" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" /></svg>`;
+                    deleteButton.className = 'ml-4 focus:outline-none flex-shrink-0';
+                    deleteButton.onclick = (e) => {
+                        e.stopPropagation();
+                        URL.revokeObjectURL(savedVideos[index].url);
+                        savedVideos.splice(index, 1);
+                        updateVideosList();
+                    };
+                    videoItem.appendChild(videoNameSpan);
+                    videoItem.appendChild(deleteButton);
+                    videosList.appendChild(videoItem);
+                });
+            }
+        }
+
+        function showVideoPlayer(url, name) {
+            videosList.classList.add('hidden');
+            videoPlayerContainer.classList.remove('hidden');
+            modalVideoPlayer.src = url;
+            modalVideoPlayer.play();
+            modalTitle.textContent = 'Preview';
+            backToListButton.classList.remove('hidden');
+        }
+
+        function showVideoList() {
+            videoPlayerContainer.classList.add('hidden');
+            videosList.classList.remove('hidden');
+            modalVideoPlayer.pause();
+            modalVideoPlayer.src = "";
+            modalTitle.textContent = 'Saved Videos';
+            backToListButton.classList.add('hidden');
+        }
+
+
+        // --- Clip Management & Drag-Drop ---
+        async function openClipsManager() {
+            renderClipsList();
+            toggleModal(clipsManagerModal, true);
+        }
+
+        function renderClipsList() {
+            clipsList.innerHTML = '';
+            currentSessionClips.forEach((clip, index) => {
+                const item = document.createElement('div');
+                item.className = 'clip-item relative rounded-lg bg-gray-700 cursor-pointer';
+                item.setAttribute('draggable', 'true');
+                item.dataset.index = index;
+
+                const thumbnailContainer = document.createElement('div');
+                thumbnailContainer.className = 'thumbnail-container rounded-lg overflow-hidden';
+                item.appendChild(thumbnailContainer);
+
+                const img = document.createElement('img');
+                img.className = 'thumbnail';
+                thumbnailContainer.appendChild(img);
+
+                if (clip.thumbnailUrl) {
+                    img.src = clip.thumbnailUrl;
+                } else {
+                    img.src = "https://placehold.co/160x90/000000/FFFFFF?text=Loading...";
+                    generateThumbnail(clip, img);
+                }
+
+                const indexLabel = document.createElement('span');
+                indexLabel.className = 'absolute top-1 left-1 bg-black bg-opacity-50 text-white text-xs px-1.5 py-0.5 rounded';
+                indexLabel.textContent = index + 1;
+                item.appendChild(indexLabel);
+
+                item.addEventListener('dragstart', handleDragStart);
+                item.addEventListener('dragover', handleDragOver);
+                item.addEventListener('drop', handleDrop);
+                item.addEventListener('dragend', handleDragEnd);
+
+                clipsList.appendChild(item);
+            });
+        }
+
+        function generateThumbnail(clip, imgElement) {
+            const video = document.createElement('video');
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const url = URL.createObjectURL(clip.blob);
+
+            video.onloadeddata = () => {
+                video.currentTime = 0.1; 
+            };
+            
+            video.onseeked = () => {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
+                clip.thumbnailUrl = dataUrl;
+                imgElement.src = dataUrl;
+                URL.revokeObjectURL(url);
+            };
+
+            video.src = url;
+        }
+
+        function handleDragStart(e) {
+            draggedItemIndex = parseInt(e.target.closest('.clip-item').dataset.index);
+            e.dataTransfer.effectAllowed = 'move';
+            setTimeout(() => e.target.closest('.clip-item').classList.add('dragging'), 0);
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            const targetItem = e.target.closest('.clip-item');
+            if (targetItem) {
+                const targetIndex = parseInt(targetItem.dataset.index);
+                if (draggedItemIndex !== targetIndex) {
+                    const [draggedClip] = currentSessionClips.splice(draggedItemIndex, 1);
+                    currentSessionClips.splice(targetIndex, 0, draggedClip);
+                    renderClipsList();
+                }
+            }
+        }
+        
+        function handleDragEnd(e) {
+            e.target.closest('.clip-item').classList.remove('dragging');
+            draggedItemIndex = null;
+        }
+        
+        // --- Event Listeners ---
+        recordButton.addEventListener('click', () => {
+            (mediaRecorder && mediaRecorder.state === 'recording') ? stopClipRecording() : startClipRecording();
+        });
+        
+        saveButton.addEventListener('click', () => {
+            isSavingSession = true;
+            (mediaRecorder && mediaRecorder.state === 'recording') ? stopClipRecording() : finalizeSession();
+        });
+
+        undoButton.addEventListener('click', undoLastClip);
+        manageClipsButton.addEventListener('click', openClipsManager);
+        
+        videosButton.addEventListener('click', () => { updateVideosList(); toggleModal(videosModal, true); });
+        closeModalButton.addEventListener('click', () => toggleModal(videosModal, false));
+        closeClipsManagerModalButton.addEventListener('click', () => toggleModal(clipsManagerModal, false));
+        backToListButton.addEventListener('click', showVideoList);
+
+
+        window.addEventListener('load', setupCamera);
+    </script>
+</body>
+</html>
