@@ -13,3 +13,5 @@ Phase 2: Multi-clip workflow with undo/save buttons appearing after first record
 Phase 3: Drag-and-drop clip management system for reordering
 
 Phase 4: Enhanced playback quality and download functionality
+
+Phase 5: Add Countdown Timer and MP4 video quality
