@@ -1,3 +1,5 @@
+<!-- MPEG4 and Countdown code-->
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -238,9 +240,9 @@
             
             // Try MP4 first, fallback to WebM if not supported
             let options;
-            if (MediaRecorder.isTypeSupported('video/mp4')) {
+            if (MediaRecorder.isTypeSupported('video/mp4; codecs="avc1.42E01E, mp4a.40.2"')) {
                 options = { 
-                    mimeType: 'video/mp4',
+                    mimeType: 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
                     videoBitsPerSecond: 2500000 // Higher bitrate for better quality
                 };
             } else if (MediaRecorder.isTypeSupported('video/webm; codecs=vp9')) {
@@ -320,7 +322,7 @@
                 const seconds = String(now.getSeconds()).padStart(2, '0');
                 
                 // Use the file extension from the first clip, or default to mp4/webm
-                const fileExtension = currentSessionClips[0]?.fileExtension || 'mp4';
+                const fileExtension = 'mp4'; // force mp4 extension for QuickTime compatibility
                 const filename = `${day}-${month}-${year}_${hours}:${minutes}:${seconds}.${fileExtension}`;
                 
                 savedVideos.push({ url, name: filename });
@@ -333,7 +335,7 @@
                     type: currentSessionClips[0]?.mimeType || 'video/mp4' 
                 });
                 const url = URL.createObjectURL(finalBlob);
-                const fileExtension = currentSessionClips[0]?.fileExtension || 'mp4';
+                const fileExtension = 'mp4'; // force mp4 extension for QuickTime compatibility
                 savedVideos.push({ url, name: `Session-${new Date().toISOString().replace(/:/g, '-')}.${fileExtension}` });
                 updateVideosList();
                 showMessage("Video session saved (basic merge)!");
